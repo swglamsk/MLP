@@ -134,7 +134,7 @@ class MLP:
                 X, Y = trainX[j:j + self.batch_size], trainY[j:j + self.batch_size]
                 self.backpropagation(X, Y)
 
-            prediction_Train = np.argmax(self.feed_forward(trainX[0:10000])[-1], axis=1)
+            prediction_Train = np.argmax(self.feed_forward(trainX)[-1], axis=1)
             prediction_Val = np.argmax(self.feed_forward(valX)[-1], axis=1)
 
             val_accuracy = np.mean(prediction_Val == np.argmax(valY, axis=1))
@@ -142,7 +142,7 @@ class MLP:
             if val_accuracy > self.best_accuracy:
                 self.best_accuracy = val_accuracy
                 self.best_acc_epoch = i
-            train_accuracy.append(np.mean(prediction_Train == np.argmax(trainY[0:10000], axis=1)))
+            train_accuracy.append(np.mean(prediction_Train == np.argmax(trainY, axis=1)))
             val_accuracy_list.append(val_accuracy)
 
 
@@ -150,12 +150,12 @@ class MLP:
         return train_accuracy, val_accuracy_list
 
 
-iterations = 10
+iterations = 1
 trainX, trainY, testX, testY, valX, valY = loadData()
 
 for i in range(iterations):
 
-    model = MLP(784,128,10, activation='relu', learning_rate=0.2, batch_size=24, init_method='he')
+    model = MLP(784,128,10, activation='relu', learning_rate=0.1, batch_size=24, init_method='he')
     start_time = time.time()
     train_acc = model.train(trainX, trainY, valX, valY, 40)
     time_elapsed = time.time() - start_time
