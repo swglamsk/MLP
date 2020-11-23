@@ -1,24 +1,12 @@
+import sys
+import time
+
 import numpy as np
 import gzip
-import pickle as pk
-
-def load_data():
-    mnist_file = 'mnist.pkl.gz'
-    with gzip.open(mnist_file, 'rb') as f:
-        train_set, valid_set, test_set = pk.load(f, encoding='latin1')
-
-    X = valid_set[0]
-    y = valid_set[1]
-
-    n_examples = len(y)
-    labels = np.unique(y)
-    Y = np.zeros((n_examples, len(labels)))
-    for ix_label in range(len(labels)):
-        ix_tmp = np.where(y == labels[ix_label])[0]
-        Y[ix_tmp, ix_label] = 1
-
-    return X, Y, labels, y
-
+import pickle
+import matplotlib.pyplot as plt
+import keras.datasets.mnist as data
+from mnist import loadData
 
 def sigmoid(z):
     return 1 / (1 + np.exp(-z))
@@ -28,134 +16,154 @@ def sigmoid_derivative(z):
     return sigmoid(z) * (1 - sigmoid(z))
 
 
-def softmax(z):
-    return np.exp(z) / sum(np.exp(z))
+def tanh(x):
+    return np.sinh(x) / np.cosh(x)
 
 
-def matrix_to_vector(matrix):
-    vector = np.array([])
+def tanh_derivative(x):
+    return 1.0 - tanh(x) ** 2
 
-    for one_layer in matrix:
-        vector = np.concatenate((vector, one_layer.flatten("F")))
-    return vector
+
+def relu(z):
+    return np.maximum(z, 0)
+
+
+def relu_derivative(x):
+    return (x > 0)
+
+
+def softmax(values):
+    e_x = np.exp(values.T - np.max(values, axis=-1))
+    return (e_x / e_x.sum(axis=0)).T
 
 
 class MLP:
-    def __init__(self, layers, activation):
-        self.lamda = 0
+    def __init__(self, *layers, activation, learning_rate=0.01, batch_size=4, init_method = 'random'):
+        self.learning_rate = learning_rate
         self.layers = layers
         self.activation = activation
         self.no_layers = len(layers)
-        self.theta_weights = self.initialize_weights()
+        self.batch_size = batch_size
+        self.bias = []
+        self.theta_weights = []
+        self.best_accuracy = 0
+        self.best_acc_epoch = 0
+        self.initialization_method = init_method
+        self.initialize_weights()
+
 
     def initialize_weights(self):
-        self.theta_weights = []
-        size_layers = self.layers.copy()
-        size_layers.pop(0)
-        for size_layer, size_next_layer in zip(self.layers, size_layers):
-            theta_tmp = np.random.randn(size_next_layer, size_layer + 1)
-            self.theta_weights.append(theta_tmp)
+        if self.initialization_method == 'random':
+            for i in range(len(self.layers) - 1):
+                self.theta_weights.append(np.random.randn(self.layers[i], self.layers[i + 1]) * 0.01)
+                self.bias.append(np.random.randn(self.layers[i + 1]) * 0.01)
 
-        return self.theta_weights
+        if self.initialization_method == 'he':
+            for i in range(len(self.layers) - 1):
+                self.theta_weights.append(np.random.randn(self.layers[i], self.layers[i + 1]) * np.sqrt(2/self.layers[i]))
+                self.bias.append(np.random.randn(self.layers[i + 1]) * 0.01)
+
+        if self.initialization_method == 'xavier':
+            for i in range(len(self.layers) - 1):
+                self.theta_weights.append(np.random.randn(self.layers[i], self.layers[i + 1]) * np.sqrt(2/(self.layers[i] + self.layers[i+1])))
+                self.bias.append(np.random.randn(self.layers[i + 1]) * 0.01)
+
 
     def feed_forward(self, X):
         g = None
-        output = None
         if self.activation == 'sigmoid':
-            g = lambda x: sigmoid(x)  # funkcja aktywacji
+            g = lambda x: sigmoid(x)
 
-        A = [None] * self.no_layers  # aktywacje
-        Z = [None] * self.no_layers  # pobudzenia
+        if self.activation == 'relu':
+            g = lambda x: relu(x)
 
-        input_layer = X
+        if self.activation == 'tanh':
+            g = lambda x: tanh(x)
 
-        for ix_layer in range(self.no_layers - 1):
-            no_examples = input_layer.shape[0]
-            input_layer = np.concatenate((np.ones([no_examples, 1]), input_layer), axis=1)
-            A[ix_layer] = input_layer
-            Z[ix_layer + 1] = np.matmul(input_layer, self.theta_weights[ix_layer].transpose())
+        A = [X]
 
-            output = g(Z[ix_layer + 1])
-            input_layer = output
+        for i in range(len(self.theta_weights)):
+            excitation = A[-1] @ self.theta_weights[i] + self.bias[i]
 
-        A[self.no_layers - 1] = output
+            if i == len(self.theta_weights) - 1:
+                layer_activations = softmax(excitation)
+            else:
+                layer_activations = g(excitation)
 
-        return A, Z
+            A.append(layer_activations)
+        return A
 
-    def train(self, X, Y, iterations):
-        for iteration in range(iterations):
-            self.gradients = self.backpropagation(X, Y)
-            self.gradients_vector = matrix_to_vector(self.gradients)
-            self.theta_vector = matrix_to_vector(self.theta_weights)
-            self.theta_vector = self.theta_vector - self.gradients_vector
-            self.theta_weights = self.vector_to_matrix(self.theta_vector)
+
+    def test_accuracy(self, testX, testY):
+        prediction = np.argmax(self.feed_forward(testX)[-1], axis=1)
+        return np.mean(prediction ==  np.argmax(testY, axis=1))
+
 
     def backpropagation(self, X, Y):
         g = None
         if self.activation == 'sigmoid':
             g = lambda x: sigmoid_derivative(x)
+        if self.activation == 'relu':
+            g = lambda x: relu_derivative(x)
+        if self.activation == 'tanh':
+            g = lambda x: tanh_derivative(x)
 
-        A, Z = self.feed_forward(X)
-        no_examples = X.shape[0]
-        deltas = [None] * self.no_layers
-        deltas[-1] = A[-1] - Y
+        gradients = np.empty_like(self.theta_weights)
+        A = self.feed_forward(X)
 
-        for ix_layers in np.arange(self.no_layers - 1 - 1, 0, -1):
-            theta_tmp = self.theta_weights[ix_layers]
+        errors = Y - A[-1]
+        tmp = errors
+        gradients[-1] = A[-2].T.dot(tmp)
 
-            theta_tmp = np.delete(theta_tmp, np.s_[0], 1)
-            deltas[ix_layers] = (np.matmul(theta_tmp.transpose(), deltas[ix_layers + 1].transpose())).transpose() * g(
-                Z[ix_layers])
+        self.bias[-1] += np.sum(errors, axis=0) / len(errors)
+        deltas = errors
+        for i in range(len(A) - 2, 0, -1):
+            deltas = g(A[i]) * deltas.dot(self.theta_weights[i].T)
+            gradients[i - 1] = A[i - 1].T.dot(deltas)
+            self.bias[i - 1] = np.sum(deltas, axis=0) / deltas.shape[1]
 
-        gradients = [None] * (self.no_layers - 1)
-        for ix_layers in range(self.no_layers - 1):
-            gradients_tmp = np.matmul(deltas[ix_layers + 1].transpose(), A[ix_layers])
-            gradients_tmp = gradients_tmp / no_examples
+        self.theta_weights += self.learning_rate * gradients / len(X)
 
-            gradients_tmp[:, 1:] = gradients_tmp[:, 1:] + (self.lamda / no_examples) * self.theta_weights[ix_layers][:,
-                                                                                       1:]
+    def train(self, trainX, trainY, valX, valY, epochs):
 
-            gradients[ix_layers] = gradients_tmp
+        train_accuracy = []
+        val_accuracy_list = []
 
-        return gradients
+        for i in range(epochs):
+            for j in range(0, len(trainX), self.batch_size):
+                X, Y = trainX[j:j + self.batch_size], trainY[j:j + self.batch_size]
+                self.backpropagation(X, Y)
 
-    def vector_to_matrix(self, vector):
-        size_next_layers = self.layers.copy()
-        size_next_layers.pop(0)
+            prediction_Train = np.argmax(self.feed_forward(trainX[0:10000])[-1], axis=1)
+            prediction_Val = np.argmax(self.feed_forward(valX)[-1], axis=1)
 
-        matrix_list = []
-        for size_layer, size_next_layer in zip(self.layers, size_next_layers):
-            n_weights = size_next_layer * (size_layer + 1)
-            data_tmp = vector[0: n_weights]
-            data_tmp = data_tmp.reshape(size_next_layer, (size_layer + 1), order='F')
-            matrix_list.append(data_tmp)
-            vector = np.delete(vector, np.s_[0:n_weights])
+            val_accuracy = np.mean(prediction_Val == np.argmax(valY, axis=1))
 
-        return matrix_list
-
-    def predict(self, X):
-        A, Z = self.feed_forward(X)
-        Y_hat = A[-1]
-
-        return Y_hat
+            if val_accuracy > self.best_accuracy:
+                self.best_accuracy = val_accuracy
+                self.best_acc_epoch = i
+            train_accuracy.append(np.mean(prediction_Train == np.argmax(trainY[0:10000], axis=1)))
+            val_accuracy_list.append(val_accuracy)
 
 
-epochs = 30
-loss = np.zeros([epochs, 1])
 
-X, Y, labels, y = load_data()
-network = MLP([784, 100, 10], 'sigmoid')
-
-for ix in range(epochs):
-    network.train(X, Y, 10)
-    Y_hat = network.predict(X)
-    loss[ix] = (0.5)*np.square(Y_hat - Y).mean()
+        return train_accuracy, val_accuracy_list
 
 
-Y_hat = network.predict(X)
-y_tmp = np.argmax(Y_hat, axis=1)
-y_hat = labels[y_tmp]
+iterations = 10
+trainX, trainY, testX, testY, valX, valY = loadData()
 
-acc = np.mean(1 * (y_hat == y))
-print('Training Accuracy: ' + str(acc*100))
+for i in range(iterations):
+
+    model = MLP(784,128,10, activation='relu', learning_rate=0.2, batch_size=24, init_method='he')
+    start_time = time.time()
+    train_acc = model.train(trainX, trainY, valX, valY, 40)
+    time_elapsed = time.time() - start_time
+    test_acc = model.test_accuracy(testX, testY)
+
+    print('Time elapsed: ', time_elapsed)
+    print('Train accuracy: ', train_acc[-1])
+    print("Best val accuracy: ", model.best_accuracy)
+    print("Best val accuracy epoch:", model.best_acc_epoch)
+    print('Test accuracy: ', test_acc)
 
