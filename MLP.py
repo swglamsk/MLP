@@ -38,7 +38,7 @@ def softmax(values):
 
 
 class MLP:
-    def __init__(self, *layers, activation, learning_rate=0.01, batch_size=4, init_method = 'random'):
+    def __init__(self, *layers, activation, learning_rate=0.01, batch_size=4, init_method = 'random', opti_method = 'none', momentum=0.9, beta1 = 0, beta2=0):
         self.learning_rate = learning_rate
         self.layers = layers
         self.activation = activation
@@ -48,8 +48,13 @@ class MLP:
         self.theta_weights = []
         self.best_accuracy = 0
         self.best_acc_epoch = 0
+        self.opti_method = opti_method
         self.initialization_method = init_method
+        self.momentum = momentum
+        self.beta1 = beta1
+        self.beta2 = beta2
         self.initialize_weights()
+
 
 
     def initialize_weights(self):
@@ -108,21 +113,40 @@ class MLP:
         if self.activation == 'tanh':
             g = lambda x: tanh_derivative(x)
 
+        opti = None
+        if self.opti_method == 'momentum':
+            opti = lambda x, y: self.momentum_f(x, y)
+        if self.opti_method == 'nestrov':
+            opti = lambda x, y: self.nestrov(x, y)
+        if self.opti_method == 'adagrad':
+            opti = lambda  x, y: self.adagrad(x, y)
+        if self.opti_method == 'adadelta':
+            opti = lambda x, y: self.adadelta(x, y)
+        if self.opti_method == 'adam':
+            opti = lambda  x, y: self.adam(x, y)
+        if self.opti_method == 'none':
+            opti = lambda x, y: self.none(x, y)
+
         gradients = np.empty_like(self.theta_weights)
+        bias = np.empty_like(self.bias)
+
         A = self.feed_forward(X)
 
         errors = Y - A[-1]
         tmp = errors
         gradients[-1] = A[-2].T.dot(tmp)
-
-        self.bias[-1] += np.sum(errors, axis=0) / len(errors)
+        bias[-1] = np.sum(errors, axis=0) / len(errors)
         deltas = errors
         for i in range(len(A) - 2, 0, -1):
             deltas = g(A[i]) * deltas.dot(self.theta_weights[i].T)
             gradients[i - 1] = A[i - 1].T.dot(deltas)
-            self.bias[i - 1] = np.sum(deltas, axis=0) / deltas.shape[1]
+            bias[i - 1] = np.sum(deltas, axis=0) / deltas.shape[1]
+        #update weights
 
-        self.theta_weights += self.learning_rate * gradients / len(X)
+        gradients /= len(X)
+        opti(gradients, bias)
+        #update weights
+
 
     def train(self, trainX, trainY, valX, valY, epochs):
 
@@ -149,15 +173,80 @@ class MLP:
 
         return train_accuracy, val_accuracy_list
 
+    def none(self, gradients, bias):
+        self.theta_weights += self.learning_rate * gradients
+        self.bias += self.learning_rate * bias
+
+
+    def adam(self, gradients, bias):
+        pass
+
+    def adadelta(self, gradients, bias):
+        pass
+
+    def adagrad(self, gradients, bias):
+        learning_rate = 0.001
+        eps = 1e-08
+        all_weights_sqrt = np.asarray([np.zeros(self.theta_weights[i].shape) for i in range(len(self.theta_weights))])
+        all_bias_sqrt = np.asarray([np.zeros(self.bias[i].shape) for i in range(len(self.bias))])
+
+        all_weights_sqrt += gradients ** 2
+        all_bias_sqrt += bias ** 2
+
+        sqrt_weights_gradients = np.empty_like(all_weights_sqrt)
+        sqrt_bias_gradients = np.empty_like(all_bias_sqrt)
+        for i in range(len(all_weights_sqrt)):
+            sqrt_weights_gradients[i] = np.sqrt(all_weights_sqrt[i] + eps)
+            sqrt_bias_gradients[i] = np.sqrt(all_bias_sqrt[i] + eps)
+
+        self.theta_weights += learning_rate / sqrt_weights_gradients * gradients
+        self.bias += learning_rate / sqrt_bias_gradients * bias
+
+
+    def nestrov(self, gradients, bias):
+        prev_weights_updates = np.asarray([np.zeros(self.theta_weights[i].shape) for i in range(len(self.theta_weights))])
+        prev_bias_updates = np.asarray([np.zeros(self.bias[i].shape) for i in range(len(self.bias))])
+
+        gradients *= self.learning_rate
+        bias *= self.learning_rate
+
+        gradients += prev_weights_updates * self.momentum
+        bias += prev_bias_updates * self.momentum
+
+        self.theta_weights += gradients + gradients * self.momentum
+        self.bias += bias + bias * self.momentum
+
+        prev_weights_updates = np.copy(gradients)
+        prev_bias_updates = np.copy(bias)
+
+    def momentum_f(self, gradients, bias):
+
+        prev_weights_updates = np.asarray([np.zeros(self.theta_weights[i].shape) for i in range(len(self.theta_weights))])
+        prev_bias_updates = np.asarray([np.zeros(self.bias[i].shape) for i in range(len(self.bias))])
+
+        gradients *= self.learning_rate
+        bias *= self.learning_rate
+
+        gradients += prev_weights_updates * self.momentum
+        bias += prev_bias_updates * self.momentum
+
+        self.theta_weights += gradients
+        self.bias += bias
+
+        prev_weights_updates = np.copy(gradients)
+        prev_bias_updates = np.copy(bias)
+
+
+
 
 iterations = 1
 trainX, trainY, testX, testY, valX, valY = loadData()
 
 for i in range(iterations):
 
-    model = MLP(784,128,10, activation='relu', learning_rate=0.1, batch_size=24, init_method='he')
+    model = MLP(784,128,10, activation='relu', learning_rate=0.01, batch_size=24, init_method='he', opti_method='adagrad', momentum=0.9)
     start_time = time.time()
-    train_acc = model.train(trainX, trainY, valX, valY, 40)
+    train_acc, val_acc = model.train(trainX, trainY, valX, valY, 40)
     time_elapsed = time.time() - start_time
     test_acc = model.test_accuracy(testX, testY)
 
@@ -167,3 +256,15 @@ for i in range(iterations):
     print("Best val accuracy epoch:", model.best_acc_epoch)
     print('Test accuracy: ', test_acc)
 
+    x = np.array(train_acc)
+    y = np.array(val_acc)
+
+    plt.plot(train_acc, label='train accuracy')
+    plt.plot(val_acc, label='validation accuracy')
+    plt.xlabel('epochs')
+    plt.ylabel('accuracy')
+    plt.title("Optimalization: " + str(model.opti_method).upper() + " \n Initialization Method: " + str(model.initialization_method).upper())
+    plt.legend(loc="upper left")
+    plt.xticks(range(0, len(train_acc)))
+    plt.yticks(np.arange(round(min(x.min(), y.min()), 2), 1, 0.01))
+    plt.show()
